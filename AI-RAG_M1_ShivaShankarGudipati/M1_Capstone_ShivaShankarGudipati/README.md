@@ -33,6 +33,27 @@ What is implemented in M1:
 
 The request path is: **auth → budget check → handler → cost and log middleware → response**. The handler is a seam (`AnswerHandler` protocol in `src/pipeline/handler.py`), so later milestones replace the handler without changing the API, authentication, logging, or cost tracking.
 
+**Request flow as built in M1:**
+
+```mermaid
+flowchart TD
+    Client["Client<br/>POST /ask with Bearer token"] --> LogMW["Logging middleware<br/>request ID, question hash and length"]
+    LogMW --> CostMW["Cost middleware<br/>sets X-Cost-USD header"]
+    CostMW --> Auth{"Token valid?<br/>EKA_API_TOKENS"}
+    Auth -- "No" --> E401["401 error envelope"]
+    Auth -- "Yes" --> Budget{"Daily budget left?<br/>EKA_DAILY_BUDGET_USD"}
+    Budget -- "No" --> E429["429 error envelope"]
+    Budget -- "Yes" --> Handler{"Handler selected by<br/>EKA_HANDLER"}
+    Handler -- "placeholder (default)" --> Placeholder["Confidence 0.0<br/>route to a human"]
+    Handler -- "baseline" --> Baseline["BM25 retrieval<br/>extractive answer<br/>term-coverage confidence"]
+    Baseline --> Threshold{"Confidence below 0.40?"}
+    Threshold -- "Yes" --> Escalate["Route to a human<br/>content = escalation message<br/>sources may be empty"]
+    Threshold -- "No" --> Cited["Answer with sources<br/>schema v1"]
+    Placeholder --> Response["JSON response<br/>Answer v1"]
+    Escalate --> Response
+    Cited --> Response
+```
+
 ---
 
 ## 📁 1. API Layer (`src/api/`)
@@ -90,7 +111,7 @@ The FastAPI service that exposes the assistant over HTTP.
 - **`data/golden_set_full.jsonl`**: 20 golden questions (8 easy, 8 medium, 4 hard). Hard questions test escalation.
 - **`eval_results/baseline.json`**: The saved baseline run, the reference for future comparisons. `my-change.json` is a second saved run.
 - **`DR1_OnePager.pdf`**: The Design Review (DR#1) one-pager.
-- **`M1CapstoneHandoff.md`**: Milestone handoff: decisions, KPIs, known gaps, and open items.
+- **[`m1-capstone-handoff.md`](m1-capstone-handoff.md)**: Milestone handoff: locked decisions, KPIs, baseline results, known gaps, and open items.
 - **`requirements.txt`** and **`pytest.ini`**: Dependencies and test configuration.
 
 ---
@@ -107,7 +128,7 @@ Offline lexical baseline (BM25 and extractive answers, untuned):
 | Hard (4) | 25% |
 | **Overall (20)** | **25%** |
 
-This is the floor that later RAG versions must beat. Known gap: the ADR target confidence combines retrieval strength, evidence agreement, and an answer-support check, but the baseline uses only top-1 term coverage. The 0.40 threshold is an untuned starting value.
+This is the floor that later RAG versions must beat. Known gap: the ADR target confidence combines retrieval strength, evidence agreement, and an answer-support check, but the baseline uses only top-1 term coverage. The 0.40 threshold is an untuned starting value. The handoff ([m1-capstone-handoff.md](m1-capstone-handoff.md)) lists the full KPI table (K1 to K3) and the known-gap effects, such as 3 of 4 hard questions answered instead of escalated.
 
 ---
 
@@ -138,11 +159,19 @@ python .\scripts\validate_m1.py
 
 Set at least one token. Without `EKA_API_TOKENS`, every protected call returns 401.
 
-```powershell
-# Format: name:token, comma-separated. Use your own random value; never commit it.
-$env:EKA_API_TOKENS = "dev:<your-local-token>"
+Generate a random token (24 random bytes, shown as 48 hex characters) and set it for this terminal:
 
-# Optional settings
+```powershell
+$b = New-Object byte[] 24
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+$token = ($b | ForEach-Object { $_.ToString("x2") }) -join ""
+$env:EKA_API_TOKENS = "dev:$token"
+$token    # prints it, so you can copy it into terminal 2
+```
+
+Optional settings, then start the server:
+
+```powershell
 $env:EKA_DAILY_BUDGET_USD = "25"    # default 25
 $env:EKA_HANDLER = "baseline"       # or "placeholder" (default)
 
@@ -153,7 +182,7 @@ Call the endpoint from a second terminal:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/ask `
-  -Headers @{ Authorization = "Bearer <your-local-token>" } `
+  -Headers @{ Authorization = "Bearer <token>" } `
   -ContentType "application/json" `
   -Body '{"question": "How many days of annual leave do employees receive?"}'
 ```
@@ -183,4 +212,4 @@ Never commit real tokens. Keep them in your local shell or an untracked `.env` f
 - **Then**: Reranking, grounded LLM generation with citations, and the answer-support check that feeds confidence.
 - **Ongoing**: Human-verify all golden questions, replace the estimated KPI baselines with real ticket and survey data, and grow the golden set to 100+ questions.
 
-Open items are tracked in [M1CapstoneHandoff.md](M1CapstoneHandoff.md).
+Open items are tracked in [m1-capstone-handoff.md](m1-capstone-handoff.md).
